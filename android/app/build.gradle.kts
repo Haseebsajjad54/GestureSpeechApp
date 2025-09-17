@@ -31,6 +31,8 @@ android {
     }
     dependencies{
         implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+        implementation("org.tensorflow:tensorflow-lite:2.14.0")
+        implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.14.0")
     }
     buildTypes {
         release {
