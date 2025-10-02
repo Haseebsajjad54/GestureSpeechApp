@@ -36,6 +36,25 @@ Future<void> main() async {
 // For BLE (new way)
   await gestureService.connectBLE();
 
+  if (gestureService.areBothConnected) {
+    print("✅ Ready to record!");
+
+    // Record gesture
+    final result = await gestureService.recordGesture();
+    print("Result: $result");
+  }
+  else if(gestureService.isLHConnected){
+    print("✅ Left Hand Ready to record!");
+
+  }
+  else if(gestureService.isRHConnected){
+    print("✅ Right Hand Ready to record!");
+
+  }
+  else{
+    print("❌ Not Connected!");
+  }
+
   runApp(const MyApp());
 }
 
