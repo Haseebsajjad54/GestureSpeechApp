@@ -1,10 +1,11 @@
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  final String baseUrl = "http://127.0.0.1:8000";
+  final String baseUrl = "http://10.0.2.2:8000"; // Use 10.0.2.2 for Android emulator
 
-  Future<String?> sendPredictionRequest(List<double> features) async {
+  Future<String?> sendPredictionRequest( features) async {
     try {
       final url = Uri.parse("$baseUrl/predict");
 
@@ -17,7 +18,7 @@ class ApiService {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         // assuming your backend response = {"prediction": "gesture_name"}
-        return data["prediction"];
+        return data["gesture"];
       } else {
         print("Error: ${response.statusCode}, ${response.body}");
         return null;
