@@ -1,62 +1,76 @@
-import 'package:esp_smartconfig/esp_smartconfig.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:untitled/services/apiService.dart';
-import 'package:network_info_plus/network_info_plus.dart';
 import 'package:untitled/services/gesture_service.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await [
+    Permission.bluetooth,
+    Permission.bluetoothScan,
+    Permission.bluetoothConnect,
+    Permission.locationWhenInUse,
+  ].request();
+
+  // // ===== Step 1: SmartConfig WiFi setup (optional) =====
   // final info = NetworkInfo();
   // final ssid = await info.getWifiName();
   // final bssid = await info.getWifiBSSID();
   //
-  // // Initialize ESP32 connection before running the app
-  // final provisioner=Provisioner.espTouch();
   // print("📶 SSID: $ssid, BSSID: $bssid");
-  // provisioner.listen((response) async{
-  //   print("Device $response has been connected to the Wifi!");
-  //    provisioner.stop();
+  //
+  // final provisioner = Provisioner.espTouch();
+  //
+  // provisioner.listen((response) {
+  //   print("✅ Device ${response.bssid} connected to WiFi!");
   // });
   //
-  // await provisioner.start(ProvisioningRequest.fromStrings(
-  //         ssid: ssid ?? "Galaxy A52",
-  //         bssid: bssid!,
-  //         password:"123456789" ,
-  //          )
-  // );
-  // await Future.delayed(Duration(seconds: 10));
-  // // provisioner.stop();
+  // try {
+  //   await provisioner.start(
+  //     ProvisioningRequest.fromStrings(
+  //       ssid: ssid ?? "",
+  //       bssid: bssid ?? "",
+  //       password: "123456789", // hotspot password
+  //     ),
+  //   );
+  //
+  //   // Wait a bit for ESPs to connect
+  //   await Future.delayed(const Duration(seconds: 10));
+  // } catch (e) {
+  //   print("⚠ SmartConfig failed: $e");
+  // } finally {
+  //   await provisioner.stop();
+  // }
 
+  // ===== Step 2: Gesture Service Setup (BLE or WiFi) =====
   final gestureService = GestureService();
 
-// For WiFi (old way)
- // await gestureService.connectToESP(lhIp: "192.168.1.10", rhIp: "192.168.1.11");
+  // Uncomment if using WiFi sockets instead of BLE
+  // await gestureService.connectToESP(
+  //   lhIp: "192.168.4.10",
+  //   rhIp: "192.168.4.11",
+  // );
 
-// For BLE (new way)
-  await gestureService.connectBLE();
+  // BLE connect
+  // await gestureService.startScanAndConnect();
 
   if (gestureService.areBothConnected) {
-    print("✅ Ready to record!");
-
-    // Record gesture
+    print("✅ Both gloves ready! Starting gesture recording...");
     final result = await gestureService.recordGesture();
     print("Result: $result");
-  }
-  else if(gestureService.isLHConnected){
-    print("✅ Left Hand Ready to record!");
-
-  }
-  else if(gestureService.isRHConnected){
-    print("✅ Right Hand Ready to record!");
-
-  }
-  else{
-    print("❌ Not Connected!");
+  } else if (gestureService.isLHConnected) {
+    print("✅ Left hand connected only.");
+  } else if (gestureService.isRHConnected) {
+    print("✅ Right hand connected only.");
+  } else {
+    print("❌ No gloves connected.");
   }
 
+  // ===== Step 3: Run App =====
   runApp(const MyApp());
 }
+
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});

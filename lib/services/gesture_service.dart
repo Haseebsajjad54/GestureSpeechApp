@@ -51,11 +51,11 @@ class GestureService {
         final name = r.device.platformName;
 
         // Check for Left Hand Glove
-        if (name.contains("Glove_LH") && _lhDevice == null) {
+        if (name.contains("Air") && _lhDevice == null) {
           print("🎯 Found LH Glove: $name");
           _lhDevice = r.device;
           FlutterBluePlus.stopScan();
-          await _connectBLEDevice(_lhDevice!, "LH");
+          await _connectBLEDevice(_lhDevice!, "Air");
         }
         // Check for Right Hand Glove
         else if (name.contains("Glove_RH") && _rhDevice == null) {
