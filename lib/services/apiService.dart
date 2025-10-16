@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  final String baseUrl = "http://10.0.2.2:8000"; // Use 10.0.2.2 for Android emulator
+  final String baseUrl = "https://gesturetospeechappbackend.onrender.com"; // Use 10.0.2.2 for Android emulator
 
   Future<String?> sendPredictionRequest( features) async {
     try {

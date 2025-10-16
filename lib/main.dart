@@ -258,7 +258,7 @@ class _PredictionScreenState extends State<PredictionScreen> {
 
       ];
 
-      final response = await apiService.sendPredictionRequest(rona);
+      final response = await apiService.sendPredictionRequest(lerkihe);
       print(response);
       setState(() {
         result = response!;
