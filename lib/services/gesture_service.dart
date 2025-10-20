@@ -1,344 +1,363 @@
 import 'dart:async';
-import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'dart:typed_data';
+
 
 class GestureService {
-  // ====== BLE Configuration ======
-  static const String SERVICE_UUID = "12345678-1234-1234-1234-123456789012";
-  static const String CHARACTERISTIC_UUID = "87654321-4321-4321-4321-210987654321";
+  bool isLHConnected = false;
+  bool isRHConnected = false;
 
-  // ====== BLE Connections ======
-  BluetoothDevice? _lhDevice;
-  BluetoothDevice? _rhDevice;
-  BluetoothCharacteristic? _lhChar;
-  BluetoothCharacteristic? _rhChar;
+  BluetoothDevice? leftGlove;
+  BluetoothDevice? rightGlove;
 
-  StreamSubscription? _scanSubscription;
+  bool get areBothConnected => isLHConnected && isRHConnected;
 
-  // Latest incoming ESP32 data
-  Map<String, dynamic> sensorData = {
-    "LH": null,
-    "RH": null,
-  };
-
-  // Singleton instance
-  static final GestureService _instance = GestureService._internal();
-  factory GestureService() => _instance;
-  GestureService._internal();
-
-  // =====================================================
-  // ====== Connect via BLE ==============================
-  // =====================================================
   Future<void> connectBLE() async {
     print("🔍 Scanning for BLE Gloves...");
 
-    // Check Bluetooth state
-    if (await FlutterBluePlus.isSupported == false) {
-      print("❌ Bluetooth not supported");
+    // ✅ Check Bluetooth availability
+    final isAvailable = await FlutterBluePlus.isAvailable;
+    if (!isAvailable) {
+      print("❌ Bluetooth not available on this device.");
+      throw Exception("Bluetooth not available");
+    }
+
+    // ✅ Check if Bluetooth is ON
+    final adapterState = await FlutterBluePlus.adapterState.first;
+    if (adapterState != BluetoothAdapterState.on) {
+      print("❌ Bluetooth is OFF. Please turn it on.");
+      throw Exception("Bluetooth is turned off");
+    }
+
+    // ✅ Stop any previous scan
+    try {
+      await FlutterBluePlus.stopScan();
+    } catch (e) {
+      print("⚠️ Error stopping previous scan: $e");
+    }
+
+    // ✅ Check already connected devices first
+    List<BluetoothDevice> connectedDevices = await FlutterBluePlus.connectedDevices;
+    for (var device in connectedDevices) {
+      final name = device.platformName;
+      if (name.contains("Glove_LH") && !isLHConnected) {
+        leftGlove = device;
+        isLHConnected = true;
+        print("✅ Left Hand Glove Already Connected: ${device.remoteId}");
+      }
+      if (name.contains("Glove_RH") && !isRHConnected) {
+        rightGlove = device;
+        isRHConnected = true;
+        print("✅ Right Hand Glove Already Connected: ${device.remoteId}");
+      }
+    }
+
+    // If both are already connected, return early
+    if (areBothConnected) {
+      print("🎯 Both gloves already connected!");
       return;
     }
 
-    // Start scan
+    // ✅ Start scanning
+    print("🔎 Starting BLE scan...");
+
+    late StreamSubscription<List<ScanResult>> subscription;
+    Completer<void> scanCompleter = Completer<void>();
+
     await FlutterBluePlus.startScan(
-      timeout: const Duration(seconds: 10),
-      androidUsesFineLocation: true,
+      timeout: const Duration(seconds: 15),
+      androidUsesFineLocation: false,
     );
 
-    // Listen for scan results
-    _scanSubscription = FlutterBluePlus.scanResults.listen((results) async {
-      for (var r in results) {
-        final name = r.device.platformName;
+    subscription = FlutterBluePlus.scanResults.listen((results) async {
+      for (final result in results) {
+        final name = result.device.platformName;
 
-        // Check for Left Hand Glove
-        if (name.contains("Air") && _lhDevice == null) {
-          print("🎯 Found LH Glove: $name");
-          _lhDevice = r.device;
-          FlutterBluePlus.stopScan();
-          await _connectBLEDevice(_lhDevice!, "Air");
-        }
-        // Check for Right Hand Glove
-        else if (name.contains("Glove_RH") && _rhDevice == null) {
-          print("🎯 Found RH Glove: $name");
-          _rhDevice = r.device;
-          FlutterBluePlus.stopScan();
-          await _connectBLEDevice(_rhDevice!, "RH");
+        if (name.isEmpty) continue; // Skip devices with no name
+
+        print("📡 Found device: $name (RSSI: ${result.rssi})");
+
+        // ✅ Connect Left Glove
+        if (name.contains("Glove_LH") && !isLHConnected) {
+          try {
+            print("🔗 Connecting to Left Hand Glove...");
+            await result.device.connect(
+              timeout: const Duration(seconds: 10),
+              autoConnect: false,
+            );
+            leftGlove = result.device;
+            isLHConnected = true;
+            print("✅ Left Hand Glove Connected: ${result.device.remoteId}");
+          } catch (e) {
+            print("❌ Failed to connect Left Glove: $e");
+          }
         }
 
-        // If both gloves found, stop scanning
-        if (_lhDevice != null && _rhDevice != null) {
-          FlutterBluePlus.stopScan();
-          print("✅ Both gloves found!");
-          break;
+        // ✅ Connect Right Glove
+        if (name.contains("Glove_RH") && !isRHConnected) {
+          try {
+            print("🔗 Connecting to Right Hand Glove...");
+            await result.device.connect(
+              timeout: const Duration(seconds: 10),
+              autoConnect: false,
+            );
+            rightGlove = result.device;
+            isRHConnected = true;
+            print("✅ Right Hand Glove Connected: ${result.device.remoteId}");
+          } catch (e) {
+            print("❌ Failed to connect Right Glove: $e");
+          }
+        }
+
+        // ✅ Both connected → stop scan
+        if (areBothConnected) {
+          print("🎯 Both gloves connected successfully!");
+          if (!scanCompleter.isCompleted) {
+            scanCompleter.complete();
+          }
         }
       }
-    }, onError: (e) {
-      print("❌ Scan error: $e");
+    }, onError: (error) {
+      print("❌ Scan error: $error");
+      if (!scanCompleter.isCompleted) {
+        scanCompleter.completeError(error);
+      }
     });
 
-    // Auto stop scan after timeout
-    await Future.delayed(const Duration(seconds: 10));
+    // ✅ Wait for scan completion or timeout
+    try {
+      await scanCompleter.future.timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          print("⏱️ Scan timeout reached");
+        },
+      );
+    } catch (e) {
+      print("⚠️ Scan error: $e");
+    }
+
+    // ✅ Stop scan and cancel subscription
     await FlutterBluePlus.stopScan();
+    await subscription.cancel();
+
+    // ✅ Final status
+    if (areBothConnected) {
+      print("🎉 SUCCESS: Both gloves connected!");
+    } else if (isLHConnected || isRHConnected) {
+      print("⚠️ Partial connection:");
+      print("   Left: ${isLHConnected ? '✅' : '❌'}");
+      print("   Right: ${isRHConnected ? '✅' : '❌'}");
+    } else {
+      print("❌ No gloves found. Make sure they are powered on and in range.");
+      throw Exception("No gloves found");
+    }
   }
 
-  Future<void> _connectBLEDevice(BluetoothDevice device, String hand) async {
+  /// Disconnect from gloves
+  Future<void> disconnect() async {
     try {
-      print("🔗 Connecting to $hand glove: ${device.platformName}");
+      if (leftGlove != null) {
+        await leftGlove!.disconnect();
+        print("🔌 Left Glove disconnected");
+      }
+      if (rightGlove != null) {
+        await rightGlove!.disconnect();
+        print("🔌 Right Glove disconnected");
+      }
+    } catch (e) {
+      print("⚠️ Disconnect error: $e");
+    }
 
-      // Connect to device
-      await device.connect(
-        timeout: const Duration(seconds: 15),
-        autoConnect: false,
-      );
+    isLHConnected = false;
+    isRHConnected = false;
+    leftGlove = null;
+    rightGlove = null;
+  }
 
-      print("✅ Connected to $hand glove");
+  /// Get sensor data from a specific glove
+  // Future<String?> readGloveData(bool isLeftHand) async {
+  //   try {
+  //     final device = isLeftHand ? leftGlove : rightGlove;
+  //
+  //     if (device == null) {
+  //       print("❌ ${isLeftHand ? 'Left' : 'Right'} glove not connected");
+  //       return null;
+  //     }
+  //
+  //     // Discover services
+  //     List<BluetoothService> services = await device.discoverServices();
+  //
+  //     // Find your service UUID
+  //     const serviceUuid = "12345678-1234-1234-1234-123456789012";
+  //     const characteristicUuid = "87654321-4321-4321-4321-210987654321";
+  //
+  //     for (var service in services) {
+  //       if (service.uuid.toString().toLowerCase() == serviceUuid.toLowerCase()) {
+  //         for (var characteristic in service.characteristics) {
+  //           if (characteristic.uuid.toString().toLowerCase() ==
+  //               characteristicUuid.toLowerCase()) {
+  //
+  //             // Read data
+  //             List<int> value = await characteristic.read();
+  //             String data = String.fromCharCodes(value);
+  //             return data;
+  //           }
+  //         }
+  //       }
+  //     }
+  //   } catch (e) {
+  //     print("❌ Error reading glove data: $e");
+  //   }
+  //   return null;
+  // }
+
+  Future<List<double>?> getSensorData() async {
+    try {
+      // Read data from both gloves
+      List<double>? leftData = await readGloveData(true);
+      List<double>? rightData = await readGloveData(false);
+
+      if (leftData == null || rightData == null) {
+        print("❌ Failed to read from one or both gloves");
+        return null;
+      }
+
+      // Combine data from both gloves into a single features list
+      List<double> features = [...leftData, ...rightData];
+
+      print("✅ Combined features from both gloves: $features");
+      return features;
+    } catch (e) {
+      print("❌ Error getting sensor data: $e");
+      return null;
+    }
+  }
+
+  Future<List<double>?> readGloveData(bool isLeftHand) async {
+    try {
+      final device = isLeftHand ? leftGlove : rightGlove;
+
+      if (device == null) {
+        print("❌ ${isLeftHand ? 'Left' : 'Right'} glove not connected");
+        return null;
+      }
 
       // Discover services
       List<BluetoothService> services = await device.discoverServices();
 
-      bool foundCharacteristic = false;
+      // Find your service UUID
+      const serviceUuid = "12345678-1234-1234-1234-123456789012";
+      const characteristicUuid = "87654321-4321-4321-4321-210987654321";
 
       for (var service in services) {
-        // Check if this is our service
-        if (service.uuid.toString().toLowerCase() == SERVICE_UUID.toLowerCase()) {
-          print("📡 Found service for $hand glove");
+        if (service.uuid.toString().toLowerCase() == serviceUuid.toLowerCase()) {
+          for (var characteristic in service.characteristics) {
+            if (characteristic.uuid.toString().toLowerCase() ==
+                characteristicUuid.toLowerCase()) {
 
-          for (var char in service.characteristics) {
-            // Check if this is our characteristic
-            if (char.uuid.toString().toLowerCase() == CHARACTERISTIC_UUID.toLowerCase()) {
-              print("📡 Found characteristic for $hand glove");
+              // Read data as bytes
+              List<int> value = await characteristic.read();
 
-              if (char.properties.notify) {
-                if (hand == "LH") {
-                  _lhChar = char;
-                } else if (hand == "RH") {
-                  _rhChar = char;
-                }
+              // Convert bytes to list of doubles
+              List<double> doubleValues = _bytesToDoubles(value);
+              print("✅ ${isLeftHand ? 'Left' : 'Right'} glove data: $doubleValues");
+              return doubleValues;
+            }
+          }
+        }
+      }
+      print("❌ Characteristic not found for ${isLeftHand ? 'Left' : 'Right'} glove");
+    } catch (e) {
+      print("❌ Error reading glove data: $e");
+    }
+    return null;
+  }
+
+// Helper function to convert bytes to list of doubles
+  List<double> _bytesToDoubles(List<int> bytes) {
+    List<double> doubles = [];
+
+    try {
+      // If bytes represent ASCII comma-separated values (e.g., "1.2,3.4,5.6")
+      String data = String.fromCharCodes(bytes);
+      List<String> values = data.split(',');
+
+      for (var value in values) {
+        double? parsed = double.tryParse(value.trim());
+        if (parsed != null) {
+          doubles.add(parsed);
+        }
+      }
+
+      // If no values parsed, try interpreting bytes as float32 array
+      if (doubles.isEmpty) {
+        doubles = _bytesToFloat32Array(bytes);
+      }
+
+      return doubles;
+    } catch (e) {
+      print("❌ Error converting bytes to doubles: $e");
+      return [];
+    }
+  }
+
+// Helper function to convert bytes to float32 array (if data is binary)
+  List<double> _bytesToFloat32Array(List<int> bytes) {
+    List<double> floats = [];
+    ByteData byteData = ByteData.view(Uint8List.fromList(bytes).buffer);
+
+    try {
+      // Read as float32 values (4 bytes per float)
+      for (int i = 0; i < byteData.lengthInBytes; i += 4) {
+        if (i + 4 <= byteData.lengthInBytes) {
+          double value = byteData.getFloat32(i, Endian.little);
+          floats.add(value);
+        }
+      }
+      return floats;
+    } catch (e) {
+      print("❌ Error converting to float32 array: $e");
+      return [];
+    }
+  }
+
+  /// Subscribe to real-time notifications from gloves
+  Stream<String>? subscribeToGlove(bool isLeftHand) {
+    try {
+      final device = isLeftHand ? leftGlove : rightGlove;
+
+      if (device == null) {
+        print("❌ ${isLeftHand ? 'Left' : 'Right'} glove not connected");
+        return null;
+      }
+
+      const serviceUuid = "12345678-1234-1234-1234-123456789012";
+      const characteristicUuid = "87654321-4321-4321-4321-210987654321";
+
+      return device.servicesStream.asyncExpand((services) async* {
+        for (var service in services) {
+          if (service.uuid.toString().toLowerCase() == serviceUuid.toLowerCase()) {
+            for (var characteristic in service.characteristics) {
+              if (characteristic.uuid.toString().toLowerCase() ==
+                  characteristicUuid.toLowerCase()) {
 
                 // Enable notifications
-                await char.setNotifyValue(true);
+                await characteristic.setNotifyValue(true);
 
-                // Listen to data
-                char.lastValueStream.listen((value) {
+                // Stream the data
+                await for (var value in characteristic.lastValueStream) {
                   if (value.isNotEmpty) {
-                    final msg = utf8.decode(value);
-                    _handleBLEMessage(hand, msg);
+                    yield String.fromCharCodes(value);
                   }
-                }, onError: (error) {
-                  print("❌ Stream error ($hand): $error");
-                });
-
-                foundCharacteristic = true;
-                print("✅ $hand Glove notifications enabled!");
-                break;
+                }
               }
             }
           }
         }
-
-        if (foundCharacteristic) break;
-      }
-
-      if (!foundCharacteristic) {
-        print("⚠️ Could not find correct characteristic for $hand glove");
-      }
-
+      });
     } catch (e) {
-      print("❌ Error connecting to $hand glove: $e");
-      rethrow;
+      print("❌ Error subscribing to glove: $e");
+      return null;
     }
   }
-
-  void _handleBLEMessage(String hand, String msg) {
-    try {
-      // Arduino sends: "LH_Flex:10,20,30,40,50 | LH_Gyro:1.2,3.4,5.6 | LH_Accel:0.1,0.2,0.9"
-      final parsed = _parseSensorString(msg, hand);
-      updateSensorData(hand, parsed);
-      // Uncomment for debugging:
-      // print("📩 [$hand] Flex: ${parsed['Flex']}, Gyro: ${parsed['Gyro']}, Accel: ${parsed['Accel']}");
-    } catch (e) {
-      print("❌ BLE parse error ($hand): $e - Message: $msg");
-    }
-  }
-
-  Map<String, dynamic> _parseSensorString(String msg, String hand) {
-    final data = {
-      "Flex": <double>[],
-      "Gyro": <double>[],
-      "Accel": <double>[]
-    };
-
-    try {
-      // Split by pipe (|)
-      final parts = msg.split("|");
-
-      for (var part in parts) {
-        part = part.trim();
-
-        // Remove hand prefix (LH_ or RH_)
-        part = part.replaceAll("${hand}_", "");
-
-        if (part.contains("Flex:")) {
-          final values = part.split(":")[1].split(",");
-          data["Flex"] = values.map((e) => double.parse(e.trim())).toList();
-        }
-        else if (part.contains("Gyro:")) {
-          final values = part.split(":")[1].split(",");
-          data["Gyro"] = values.map((e) => double.parse(e.trim())).toList();
-        }
-        else if (part.contains("Accel:")) {
-          final values = part.split(":")[1].split(",");
-          data["Accel"] = values.map((e) => double.parse(e.trim())).toList();
-        }
-      }
-    } catch (e) {
-      print("⚠️ Parse failed for: $msg");
-      print("Error: $e");
-    }
-
-    return data;
-  }
-
-  // =====================================================
-  // ====== Common Methods ===============================
-  // =====================================================
-  void updateSensorData(String hand, Map<String, dynamic> data) {
-    if (hand != "LH" && hand != "RH") {
-      throw ArgumentError("Hand must be 'LH' or 'RH'");
-    }
-    sensorData[hand] = data;
-  }
-
-  Map<String, List<double>> _extractValues(Map<String, dynamic> data) {
-    return {
-      "Flex": List<double>.from(data["Flex"] ?? []),
-      "Gyro": List<double>.from(data["Gyro"] ?? []),
-      "Accel": List<double>.from(data["Accel"] ?? []),
-    };
-  }
-
-  Future<Map<String, dynamic>> recordGesture() async {
-    print("⏳ Waiting for data from Gloves...");
-    final startWait = DateTime.now();
-
-    // Wait max 10s for both gloves
-    while (DateTime.now().difference(startWait).inSeconds < 10) {
-      if (sensorData["LH"] != null && sensorData["RH"] != null) break;
-      await Future.delayed(const Duration(milliseconds: 100));
-    }
-
-    if (sensorData["LH"] == null || sensorData["RH"] == null) {
-      return {"error": "⚠️ No data from Gloves. LH: ${sensorData["LH"] != null}, RH: ${sensorData["RH"] != null}"};
-    }
-
-    int frames = 0;
-    List<List<double>> framesList = [];
-    final t0 = DateTime.now();
-
-    print("🎬 Starting gesture recording...");
-
-    while (frames < 20 && DateTime.now().difference(t0).inSeconds < 10) {
-      final lh = sensorData["LH"];
-      final rh = sensorData["RH"];
-
-      if (lh == null || rh == null) {
-        await Future.delayed(const Duration(milliseconds: 50));
-        continue;
-      }
-
-      final lv = _extractValues(Map<String, dynamic>.from(lh));
-      final rv = _extractValues(Map<String, dynamic>.from(rh));
-
-      // Validate data
-      if (lv["Flex"]!.length == 5 &&
-          lv["Gyro"]!.length == 3 &&
-          lv["Accel"]!.length == 3 &&
-          rv["Flex"]!.length == 5 &&
-          rv["Gyro"]!.length == 3 &&
-          rv["Accel"]!.length == 3) {
-
-        // One frame = 22 features
-        List<double> frame = [];
-        frame.addAll(lv["Flex"]!);  // 5
-        frame.addAll(lv["Gyro"]!);  // 3
-        frame.addAll(lv["Accel"]!); // 3
-        frame.addAll(rv["Flex"]!);  // 5
-        frame.addAll(rv["Gyro"]!);  // 3
-        frame.addAll(rv["Accel"]!); // 3
-
-        framesList.add(frame);
-        frames++;
-        print("✅ Frame $frames/20 recorded");
-
-        await Future.delayed(const Duration(milliseconds: 150));
-      } else {
-        print("⚠️ Incomplete data - LH: ${lv}, RH: ${rv}");
-      }
-    }
-
-    if (frames < 20) {
-      return {"error": "⚠️ Only $frames/20 frames recorded"};
-    }
-
-    print("✅ Recording completed! Shape = 1×20×22");
-
-    return await _sendPredictionRequest(framesList);
-  }
-
-  Future<Map<String, dynamic>> _sendPredictionRequest(
-      List<List<double>> frames) async {
-    final url = Uri.parse("http://YOUR_SERVER_IP:8000/predict");
-
-    try {
-      print("📤 Sending prediction request...");
-
-      final response = await http.post(
-        url,
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"features": [frames]}),
-      ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final result = jsonDecode(response.body);
-        print("✅ Prediction received: $result");
-        return result;
-      } else {
-        return {"error": "Server error ${response.statusCode}"};
-      }
-    } catch (e) {
-      return {"error": "Failed to connect: $e"};
-    }
-  }
-
-  Future<void> disconnect() async {
-    // Stop scanning
-    await FlutterBluePlus.stopScan();
-    _scanSubscription?.cancel();
-
-    // Disconnect BLE devices
-    if (_lhDevice != null) {
-      await _lhDevice!.disconnect();
-      print("❌ LH Glove disconnected");
-    }
-
-    if (_rhDevice != null) {
-      await _rhDevice!.disconnect();
-      print("❌ RH Glove disconnected");
-    }
-
-    // Clear references
-    _lhDevice = null;
-    _rhDevice = null;
-    _lhChar = null;
-    _rhChar = null;
-
-    sensorData = {"LH": null, "RH": null};
-
-    print("✅ All connections closed");
-  }
-
-  // Check connection status
-  bool get isLHConnected => _lhDevice != null && _lhChar != null;
-  bool get isRHConnected => _rhDevice != null && _rhChar != null;
-  bool get areBothConnected => isLHConnected && isRHConnected;
 }

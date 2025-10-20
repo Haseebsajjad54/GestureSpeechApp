@@ -17,7 +17,6 @@ class ApiService {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        // assuming your backend response = {"prediction": "gesture_name"}
         return data["gesture"];
       } else {
         print("Error: ${response.statusCode}, ${response.body}");
