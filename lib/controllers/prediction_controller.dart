@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'dart:async';
 import '../services/gesture_service.dart';
 import '../services/apiService.dart';
@@ -55,16 +56,26 @@ class GloveConnectionController extends ChangeNotifier {
           try {
             final features = await _gestureService.readGloveData(true);
 
+
+
             if (features != null && features.isNotEmpty) {
               final prediction = await _apiService.sendPredictionRequest(features);
 
               _lastPrediction = prediction ?? "No response";
               notifyListeners();
+              await speakText(_lastPrediction);
             }
           } catch (e) {
             print("Error in data stream: $e");
           }
         });
+  }
+  final flutterTts = FlutterTts();
+
+  Future<void> speakText(String text) async {
+    await flutterTts.setLanguage("ur-PK");
+    await flutterTts.setPitch(1.0);
+    await flutterTts.speak(text);
   }
 
   // Stop streaming data
