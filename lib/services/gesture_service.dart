@@ -16,7 +16,7 @@ class GestureService {
     print("🔍 Scanning for BLE Gloves...");
 
     // ✅ Check Bluetooth availability
-    final isAvailable = await FlutterBluePlus.isAvailable;
+    final isAvailable = await FlutterBluePlus.isSupported;
     if (!isAvailable) {
       print("❌ Bluetooth not available on this device.");
       throw Exception("Bluetooth not available");
@@ -37,7 +37,7 @@ class GestureService {
     }
 
     // ✅ Check already connected devices first
-    List<BluetoothDevice> connectedDevices = await FlutterBluePlus.connectedDevices;
+    List<BluetoothDevice> connectedDevices = FlutterBluePlus.connectedDevices;
     for (var device in connectedDevices) {
       final name = device.platformName;
       if (name.contains("Glove_LH") && !isLHConnected) {
@@ -210,29 +210,62 @@ class GestureService {
   //   }
   //   return null;
   // }
+  List<List<double>> gestureBuffer = [];
+  static const int FRAMES_PER_GESTURE = 20;
+  static const int FRAME_DELAY_MS = 150;
+  static const int SENSORS_PER_FRAME = 22;
 
-  Future<List<double>?> getSensorData() async {
+  /// Collects gesture data over 3 seconds (20 frames at 150ms intervals)
+  /// Returns a 2D list: (20, 22) where 20 = frames, 22 = sensor values per frame
+  Future<List<List<double>>?> getSensorData() async {
     try {
-      // Read data from both gloves
-      List<double>? leftData = await readGloveData(true);
-      List<double>? rightData = await readGloveData(false);
+      gestureBuffer.clear();
 
-      if (leftData == null || rightData == null) {
-        print("❌ Failed to read from one or both gloves");
-        return null;
+      print("📊 Starting gesture capture: 20 frames over 3 seconds...");
+
+      // Collect 20 frames
+      for (int frame = 0; frame < FRAMES_PER_GESTURE; frame++) {
+        // Read data from both gloves
+        List<double>? leftData = await readGloveData(true);
+        List<double>? rightData = await readGloveData(false);
+
+        if (leftData == null || rightData == null) {
+          print("❌ Failed to read from one or both gloves at frame $frame");
+          return null;
+        }
+
+        // Validate data length (each glove should have 11 values)
+        // Left: 5 flex + 3 gyro + 3 accel = 11
+        // Right: 5 flex + 3 gyro + 3 accel = 11
+        // Total: 22 values
+        if (leftData.length != 11 || rightData.length != 11) {
+          print("❌ Invalid data length at frame $frame. Left: ${leftData.length}, Right: ${rightData.length}");
+          return null;
+        }
+
+        // Combine data from both gloves into a single frame
+        List<double> frameData = [...leftData, ...rightData];
+        gestureBuffer.add(frameData);
+
+        print("✅ Frame ${frame + 1}/$FRAMES_PER_GESTURE captured: ${frameData.length} values");
+
+        // Wait 150ms before next frame (skip delay on last frame)
+        if (frame < FRAMES_PER_GESTURE - 1) {
+          await Future.delayed(Duration(milliseconds: FRAME_DELAY_MS));
+        }
       }
 
-      // Combine data from both gloves into a single features list
-      List<double> features = [...leftData, ...rightData];
+      print("✅ Gesture capture complete: ${gestureBuffer.length} frames");
+      return gestureBuffer;
 
-      print("✅ Combined features from both gloves: $features");
-      return features;
     } catch (e) {
       print("❌ Error getting sensor data: $e");
       return null;
     }
   }
 
+  /// Reads sensor data from a single glove
+  /// Returns 11 values: [5 flex, 3 gyro, 3 accel]
   Future<List<double>?> readGloveData(bool isLeftHand) async {
     try {
       final device = isLeftHand ? leftGlove : rightGlove;
@@ -258,9 +291,14 @@ class GestureService {
               // Read data as bytes
               List<int> value = await characteristic.read();
 
-              // Convert bytes to list of doubles
+              // Convert bytes to list of doubles (should be 11 values)
               List<double> doubleValues = _bytesToDoubles(value);
-              print("✅ ${isLeftHand ? 'Left' : 'Right'} glove data: $doubleValues");
+
+              // Validate expected length
+              if (doubleValues.length != 11) {
+                print("⚠️ Warning: ${isLeftHand ? 'Left' : 'Right'} glove returned ${doubleValues.length} values, expected 11");
+              }
+
               return doubleValues;
             }
           }
@@ -273,32 +311,39 @@ class GestureService {
     return null;
   }
 
-// Helper function to convert bytes to list of doubles
+  /// Helper function to convert bytes to doubles
+  /// Assumes each value is 4 bytes (float32)
   List<double> _bytesToDoubles(List<int> bytes) {
     List<double> doubles = [];
 
-    try {
-      // If bytes represent ASCII comma-separated values (e.g., "1.2,3.4,5.6")
-      String data = String.fromCharCodes(bytes);
-      List<String> values = data.split(',');
+    // Process bytes in groups of 4 (assuming float32 encoding)
+    for (int i = 0; i < bytes.length; i += 4) {
+      if (i + 3 < bytes.length) {
+        // Convert 4 bytes to float
+        ByteData byteData = ByteData(4);
+        byteData.setUint8(0, bytes[i]);
+        byteData.setUint8(1, bytes[i + 1]);
+        byteData.setUint8(2, bytes[i + 2]);
+        byteData.setUint8(3, bytes[i + 3]);
 
-      for (var value in values) {
-        double? parsed = double.tryParse(value.trim());
-        if (parsed != null) {
-          doubles.add(parsed);
-        }
+        double value = byteData.getFloat32(0, Endian.little);
+        doubles.add(value);
       }
-
-      // If no values parsed, try interpreting bytes as float32 array
-      if (doubles.isEmpty) {
-        doubles = _bytesToFloat32Array(bytes);
-      }
-
-      return doubles;
-    } catch (e) {
-      print("❌ Error converting bytes to doubles: $e");
-      return [];
     }
+
+    return doubles;
+  }
+
+  /// Optional: Convert buffer to format expected by TensorFlow Lite
+  /// Input shape: (1, 20, 22)
+  List<List<List<double>>> formatForModel(List<List<double>> buffer) {
+    if (buffer.length != FRAMES_PER_GESTURE ||
+        buffer[0].length != SENSORS_PER_FRAME) {
+      throw Exception("Invalid buffer dimensions");
+    }
+
+    // Wrap in another list to create batch dimension (1, 20, 22)
+    return [buffer];
   }
 
 // Helper function to convert bytes to float32 array (if data is binary)
